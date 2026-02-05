@@ -357,6 +357,9 @@ def parentRibbonJoints():
     for jnt, ctrl in zip(ribbonJoints, ribbonCtrls):
         cmds.parent(jnt, ctrl)
 
+    for j in ribbonJoints:
+        cmds.setAttr(j + ".drawStyle", 2)
+
 def importRibbonPlacement():
     # Build file path
     projectRoot = cmds.workspace(q=True, rd=True).replace("\\", "/")
@@ -381,17 +384,22 @@ def importRibbonPlacement():
     placementCtrl = cmds.rename(placementCtrl, "Ctrl_Ribbon_Placement")
 
     # Find body ctrl
-    worldCtrls = cmds.ls(type="transform") or []
-    worldCandidates = [w for w in worldCtrls if "tsm3_upper_body" in w.lower()]
-    if not worldCandidates:
-        worldCandidates = [w for w in worldCtrls if "body_C0_ctrl" in w.lower()]
-        if not worldCandidates:
-            worldCandidates = [w for w in worldCtrls if "world_ctrl" in w.lower()]
-            if not worldCandidates:
-                cmds.error("No body ctrl found")
-
-    # Use the first (or only) match
-    worldCtrl = worldCandidates[0]
+    controls = ["tsm3_upper_body", "spine_C0_ik0_ctrl", "body_C0_ctrl", "world_ctrl"]
+    worldCtrl = None
+    for name in controls:
+        if cmds.objExists(name):
+            worldCtrl = name
+            break
+    if not worldCtrl:
+        worldCtrls = cmds.ls(type="transform") or []
+        priority_contains = ["tsm3_upper_body", "spine_c0_ik0_ctrl", "body_c0_ctrl", "world_ctrl"]
+        for needle in priority_contains:
+            matches = [w for w in worldCtrls if needle in w.lower()]
+            if matches:
+                worldCtrl = sorted(matches, key=len)[0]  # prefer cleanest/shortest (good for namespaces)
+                break
+    if not worldCtrl:
+        cmds.error("No body ctrl found")
 
     # Snap placement control to body ctrl position
     tmp = cmds.pointConstraint(worldCtrl, placementCtrl)[0]
@@ -631,7 +639,7 @@ def createSineInputSDKs():
         # driverAttr, driverStart, driverEnd,  drivenAttr,  drivenStart, drivenEnd
         ("Amplitude", 0, 7, sineDef, "amplitude", 0, 2),
         ("Frequency", 0, 4, sineDef, "wavelength", 4.5, 0.5),
-        ("Animation", 0, 10, sineDef, "offset", 0, 10),
+        ("Animation", 0, 2000, sineDef, "offset", 0, 2000),
         ("HeadLock", 0, 3, sineDef, "dropoff", -1, -0.7),
         ("TailWave", 0, 7, sineDef, "lowBound", -10, -2),
         ("CurveDirection", 0, 1, sineHandle, "rotateZ", 0, 90),
@@ -757,31 +765,134 @@ def cleanupRibbonRig():
         cmds.error("No Ribbon Rig nodes found to group!")
 
     # Create the RibbonRig group
-    ribbonGrp = cmds.group(finalNodes, name=groupName)
+    cmds.group(finalNodes, name=groupName)
 
     # Hide the nodes listed
     for n in nodesToHide:
         if cmds.objExists(n):
             cmds.setAttr(f"{n}.visibility", 0)
+
+    # Change control colors
+    ribbonCtrls = cmds.ls("Ribbon_Ctrl_*", type="transform") or []
+    ribbonCtrls = [c for c in ribbonCtrls if cmds.listRelatives(c, shapes=True, type="nurbsCurve")]
+    placement = ["Ctrl_Ribbon_Placement"]
+    ribbonCtrls = ribbonCtrls+placement
+    for ctrl in ribbonCtrls:
+        if not cmds.objExists(ctrl):
+            continue
+        shapes = cmds.listRelatives(ctrl, shapes=True, type="nurbsCurve") or []
+        for s in shapes:
+            cmds.setAttr(s + ".overrideEnabled", 1)
+            cmds.setAttr(s + ".overrideColor", 17)
             
-    # Parent constraint placement to body control
+    # Parent constraint placement group to body control
     placement = "Ctrl_Ribbon_Placement"
+    placementGrp = placement + "_grp"
+    parent = cmds.listRelatives(placement, parent=True, fullPath=True)
+    parent = parent[0] if parent else None
+    placementGrp = cmds.group(em=True, name=placementGrp)
+    cmds.delete(cmds.parentConstraint(placement, placementGrp, mo=False))
+    placementGrp = cmds.parent(placementGrp, parent)[0]
+    m = cmds.xform(placement, q=True, m=True)
+    cmds.xform(placementGrp, m=m)
+    cmds.parent(placement, placementGrp)
+    cmds.setAttr(placement + ".translate", 0, 0, 0, type="double3")
+    cmds.setAttr(placement + ".rotate", 0, 0, 0, type="double3")
+    cmds.setAttr(placement + ".scale", 1, 1, 1, type="double3")
+    # match placementGrp pivot to placement control pivot
+    piv = cmds.xform(placement, q=True, ws=True, rp=True)
+    cmds.xform(placementGrp, ws=True, rp=piv)
+    cmds.xform(placementGrp, ws=True, sp=piv)
+    # Lock and hide scale and visibility on all controls
+    for ctrl in ribbonCtrls:
+        if not cmds.objExists(ctrl):
+            continue
+        for attr in ["sx", "sy", "sz"]:
+            try:
+                cmds.setAttr(f"{ctrl}.{attr}", lock=True, keyable=False, channelBox=False)
+            except:
+                pass
+        try:
+            cmds.setAttr(f"{ctrl}.v", keyable=False, channelBox=False)
+        except:
+            pass
+
     bodyCtrl = cmds.ls(type="transform") or []
     worldCandidates = [w for w in bodyCtrl if "tsm3_upper_body" in w.lower()]
     if not worldCandidates:
-        worldCandidates = [w for w in bodyCtrl if "body_C0_ctrl" in w.lower()]
+        worldCandidates = [w for w in bodyCtrl if "spine_c0_ik0_ctrl" in w.lower()]
         if not worldCandidates:
-            worldCandidates = [w for w in bodyCtrl if "world_ctrl" in w.lower()]
+            worldCandidates = [w for w in bodyCtrl if "body_c0_ctrl" in w.lower()]
             if not worldCandidates:
-                cmds.error("No body ctrl found")
+                worldCandidates = [w for w in bodyCtrl if "world_ctrl" in w.lower()]
+                if not worldCandidates:
+                    cmds.error("No body ctrl found")
     bodyCtrl = worldCandidates[0]
+  
+    # Create local/world space switch on the placement control along with parent constraint
+    addPlacementSpaceSwitch(placement=placement, localTarget=bodyCtrl)
 
-    # Create parent constraint with maintainOffset so it doesn't jump
-    cmds.parentConstraint(bodyCtrl, placement, mo=True)
+def addPlacementSpaceSwitch(placement="Ctrl_Ribbon_Placement", localTarget=None):
 
-    print("\nRibbonRig creation Complete!")
+    # Find world ctrl
+    allXforms = cmds.ls(type="transform") or []
+    worldMatches = [n for n in allXforms if "world_ctrl" in n.lower()]
+    if not worldMatches:
+        cmds.error("world_ctrl not found for world space switch")
+    worldTarget = sorted(worldMatches, key=len)[0]
 
-    return ribbonGrp
+    if not localTarget or not cmds.objExists(localTarget):
+        cmds.error("localTarget not provided or does not exist for space switch")
+
+    placementGrp = placement + "_grp"
+
+    # pivot constraint
+    pcon = cmds.pointConstraint(localTarget, placementGrp, mo=True)[0]
+
+    # scale constraint
+    scon = cmds.scaleConstraint(localTarget, placementGrp, mo=True)[0]
+
+    # rotation with space switching
+    ocon = cmds.orientConstraint(localTarget, worldTarget, placementGrp, mo=True)[0]
+
+    # Add enum attr space: Local / World
+    if not cmds.attributeQuery("space", node=placement, exists=True):
+        cmds.addAttr(placement, ln="space", at="enum", en="Local:World", k=True)
+
+    # Weight aliases (order matches targets passed into orientConstraint)
+    w_aliases = cmds.orientConstraint(ocon, q=True, wal=True)
+    if not w_aliases or len(w_aliases) < 2:
+        cmds.error("Could not query orientConstraint weight aliases")
+
+    localW = f"{ocon}.{w_aliases[0]}"
+    worldW = f"{ocon}.{w_aliases[1]}"
+
+    # Set driven keys
+    # space=0 => local rot
+    cmds.setAttr(f"{placement}.space", 0)
+    cmds.setAttr(localW, 1)
+    cmds.setAttr(worldW, 0)
+    cmds.setDrivenKeyframe(localW,  cd=f"{placement}.space")
+    cmds.setDrivenKeyframe(worldW, cd=f"{placement}.space")
+
+    # space=1 => world rot
+    cmds.setAttr(f"{placement}.space", 1)
+    cmds.setAttr(localW, 0)
+    cmds.setAttr(worldW, 1)
+    cmds.setDrivenKeyframe(localW,  cd=f"{placement}.space")
+    cmds.setDrivenKeyframe(worldW, cd=f"{placement}.space")
+
+    # Linear tangents
+    for plug in (localW, worldW):
+        curves = cmds.keyframe(plug, q=True, name=True) or []
+        for c in curves:
+            cmds.keyTangent(c, itt="linear", ott="linear")
+
+    # Default back to Local
+    cmds.setAttr(f"{placement}.space", 0)
+
+    return pcon, ocon, scon
+
 
 def runRibbonRig():
     controlCount = countFKControls()
@@ -801,3 +912,4 @@ def runRibbonRig():
     createSineInputSDKs()
     createTwistInputSDKs()
     cleanupRibbonRig()
+    print("\nRibbonRig creation Complete!")
